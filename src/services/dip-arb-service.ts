@@ -92,6 +92,7 @@ export class DipArbService extends EventEmitter {
   private isRunning = false;
   private isExecuting = false;
   private lastExecutionTime = 0;
+  private wsConnected = true;  // tracks live WebSocket health
   private stats: DipArbStats;
 
   // Subscriptions
@@ -315,6 +316,21 @@ export class DipArbService extends EventEmitter {
     this.log(`Duration: ${market.durationMinutes}m`);
     this.log(`Auto Execute: ${this.config.autoExecute ? 'YES' : 'NO'}`);
 
+    // Tune thresholds to market duration — 5m markets move faster so we use
+    // a tighter sliding window and a lower dip threshold to catch moves early.
+    if (market.durationMinutes <= 5) {
+      this.config.slidingWindowMs = 1500;  // 1.5s window (vs 3s for 15m)
+      this.config.dipThreshold = 0.10;     // 10% dip triggers (vs 15%)
+      this.config.windowMinutes = 1;       // 1-min entry window (vs 2)
+      this.config.leg2TimeoutSeconds = 90; // 90s hedge timeout (vs 180s)
+      this.log('Thresholds tuned for 5m: slidingWindow=1.5s dip=10% entry=1m leg2Timeout=90s');
+    } else {
+      this.config.slidingWindowMs = 3000;
+      this.config.dipThreshold = 0.15;
+      this.config.windowMinutes = 2;
+      this.config.leg2TimeoutSeconds = 180;
+    }
+
     // Initialize trading service if available
     if (this.tradingService) {
       try {
@@ -349,6 +365,16 @@ export class DipArbService extends EventEmitter {
         this.log('WebSocket connected');
         resolve();
       });
+    });
+
+    // Monitor WebSocket health — pause signal processing while disconnected
+    this.realtimeService.on('disconnected', () => {
+      this.wsConnected = false;
+      this.log('⚠️ WebSocket disconnected — signal processing paused until reconnect');
+    });
+    this.realtimeService.on('connected', () => {
+      this.wsConnected = true;
+      this.log('✅ WebSocket reconnected — signal processing resumed');
     });
 
     // Subscribe to market orderbook
@@ -565,7 +591,7 @@ export class DipArbService extends EventEmitter {
       const splitCount = Math.max(1, this.config.splitOrders);
 
       // 🔴 FIXED: Enforce minimum trade value to ensure exit capability
-      const MIN_TRADE_VALUE = 1.5;  // $1.50 (50% buffer above Polymarket's $1 minimum)
+      const MIN_TRADE_VALUE = 1.0;  // $1.00 Polymarket hard minimum per leg
       const minSharesForMinValue = Math.ceil(MIN_TRADE_VALUE / signal.targetPrice);
       const adjustedShares = Math.max(signal.shares, minSharesForMinValue);
 
@@ -960,8 +986,8 @@ export class DipArbService extends EventEmitter {
       this.emit('error', err instanceof Error ? err : new Error(String(err)));
     });
 
-    // Skip signal detection entirely if already executing (prevents duplicate detection logs)
-    if (this.isExecuting) {
+    // Skip signal detection if already executing or WebSocket is down
+    if (this.isExecuting || !this.wsConnected) {
       return;
     }
 
@@ -1680,7 +1706,7 @@ export class DipArbService extends EventEmitter {
             }
           }
         } catch (err) {
-          // Skip this market on error
+          this.log(`⚠️ Error scanning market for redeemable positions: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 

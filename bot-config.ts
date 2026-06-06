@@ -88,7 +88,7 @@ const CONFIG = {
     checkLastNTrades: 10,  // Analyze last 10 trades for consistency
 
     sizeScale: 0.1,
-    maxSizePerTrade: 15,
+    maxSizePerTrade: 10,
     maxSlippage: 0.03,
     minTradeSize: 10,
     delay: 500,
@@ -118,11 +118,10 @@ const CONFIG = {
   dipArb: {
     enabled: true,
     coins: ['BTC', 'ETH', 'SOL'] as const,
-    shares: 10,
+    shares: 3,
     sumTarget: 0.92,
     autoRotate: true,
-    // 🔴 NEW: Minimum trade value enforcement
-    minTradeValueUSD: 1.5,  // $1.50 minimum (buffer above $1)
+    minTradeValueUSD: 1.0,
   },
 
   onchain: {
@@ -568,15 +567,15 @@ async function setupDipArb(sdk: PolymarketSDK) {
   if (CONFIG.dipArb.autoRotate) {
     sdk.dipArb.enableAutoRotate({
       enabled: true,
-      underlyings: ['ETH', 'BTC', 'SOL'],
-      duration: '15m',
+      underlyings: ['BTC', 'ETH', 'SOL'],
+      duration: '5m',
       settleStrategy: 'redeem',
-      redeemWaitMinutes: 5,
+      redeemWaitMinutes: 2,
     });
   }
 
   try {
-    const market = await sdk.dipArb.findAndStart({ coin: 'ETH', preferDuration: '15m' });
+    const market = await sdk.dipArb.findAndStart({ coin: 'BTC', preferDuration: '5m' });
     if (market) state.activeDipArbMarket = market.name;
   } catch { /* no markets */ }
 }

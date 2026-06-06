@@ -899,7 +899,7 @@ export class SmartMoneyService {
    *   topN: 10,
    *
    *   sizeScale: 0.1,        // 10%
-   *   maxSizePerTrade: 50,   // $50
+   *   maxSizePerTrade: 10,   // $10
    *   maxSlippage: 0.03,     // 3%
    *   orderType: 'FOK',
    *
@@ -944,7 +944,7 @@ export class SmartMoneyService {
 
     // Config
     const sizeScale = options.sizeScale ?? 0.1;
-    const maxSizePerTrade = options.maxSizePerTrade ?? 50;
+    const maxSizePerTrade = options.maxSizePerTrade ?? 10;
     const maxSlippage = options.maxSlippage ?? 0.03;
     const orderType = options.orderType ?? 'FOK';
     const minTradeSize = options.minTradeSize ?? 10;

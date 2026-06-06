@@ -59,7 +59,9 @@
     "bottleneck": "^2.19.5",
     "dotenv": "^17.2.3",
     "ethers": "5",
+    "groq-sdk": "^1.2.1",
     "isomorphic-ws": "^5.0.0",
+    "openai": "^6.42.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {

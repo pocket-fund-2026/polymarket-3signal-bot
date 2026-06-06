@@ -54,6 +54,35 @@ export const MIN_ORDER_VALUE_USDC = 1;
 export const MIN_ORDER_SIZE_SHARES = 5;
 
 // ============================================================================
+// Retry utility (polymath agentic-tool-use: transient errors → retry+backoff)
+// ============================================================================
+
+const RETRYABLE_MESSAGES = ['timeout', 'network', 'ECONNRESET', 'ETIMEDOUT', '429', '503', '502'];
+
+function isTransient(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+  return RETRYABLE_MESSAGES.some(s => msg.includes(s));
+}
+
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxAttempts = 3,
+  baseDelayMs = 300,
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isTransient(err) || attempt === maxAttempts) throw err;
+      await new Promise(r => setTimeout(r, baseDelayMs * 2 ** (attempt - 1)));
+    }
+  }
+  throw lastErr;
+}
+
+// ============================================================================
 // Types
 // ============================================================================
 
@@ -315,16 +344,18 @@ export class TradingService {
 
         const orderType = params.orderType === 'GTD' ? ClobOrderType.GTD : ClobOrderType.GTC;
 
-        const result = await client.createAndPostOrder(
-          {
-            tokenID: params.tokenId,
-            side: params.side === 'BUY' ? ClobSide.BUY : ClobSide.SELL,
-            price: params.price,
-            size: params.size,
-            expiration: params.expiration || 0,
-          },
-          { tickSize, negRisk },
-          orderType
+        const result = await withRetry(() =>
+          client.createAndPostOrder(
+            {
+              tokenID: params.tokenId,
+              side: params.side === 'BUY' ? ClobSide.BUY : ClobSide.SELL,
+              price: params.price,
+              size: params.size,
+              expiration: params.expiration || 0,
+            },
+            { tickSize, negRisk },
+            orderType,
+          )
         );
 
         const success = result.success === true ||
@@ -376,15 +407,17 @@ export class TradingService {
 
         const orderType = params.orderType === 'FAK' ? ClobOrderType.FAK : ClobOrderType.FOK;
 
-        const result = await client.createAndPostMarketOrder(
-          {
-            tokenID: params.tokenId,
-            side: params.side === 'BUY' ? ClobSide.BUY : ClobSide.SELL,
-            amount: params.amount,
-            price: params.price,
-          },
-          { tickSize, negRisk },
-          orderType
+        const result = await withRetry(() =>
+          client.createAndPostMarketOrder(
+            {
+              tokenID: params.tokenId,
+              side: params.side === 'BUY' ? ClobSide.BUY : ClobSide.SELL,
+              amount: params.amount,
+              price: params.price,
+            },
+            { tickSize, negRisk },
+            orderType,
+          )
         );
 
         const success = result.success === true ||

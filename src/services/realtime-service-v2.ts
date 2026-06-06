@@ -21,6 +21,7 @@ import {
   ConnectionStatus,
 } from '@polymarket/real-time-data-client';
 import type { PriceUpdate, BookUpdate, Orderbook, OrderbookLevel } from '../core/types.js';
+import { ClobOrderbookWS } from './clob-orderbook-ws.js';
 
 // ============================================================================
 // Types
@@ -259,6 +260,9 @@ export class RealtimeServiceV2 extends EventEmitter {
   private subscriptionIdCounter = 0;
   private connected = false;
 
+  // Direct CLOB orderbook WebSocket (replaces deprecated clob_market topic)
+  private clobWS = new ClobOrderbookWS();
+
   // Store subscription messages for reconnection
   private subscriptionMessages: Map<string, { subscriptions: Array<{ topic: string; type: string; filters?: string; clob_auth?: ClobApiKeyCreds }> }> = new Map();
 
@@ -298,6 +302,8 @@ export class RealtimeServiceV2 extends EventEmitter {
     });
 
     this.client.connect();
+    // Also connect the dedicated CLOB orderbook WebSocket
+    this.clobWS.connect();
     return this;
   }
 
@@ -310,8 +316,9 @@ export class RealtimeServiceV2 extends EventEmitter {
       this.client = null;
       this.connected = false;
       this.subscriptions.clear();
-      this.subscriptionMessages.clear();  // Clear reconnection list
+      this.subscriptionMessages.clear();
     }
+    this.clobWS.destroy();
   }
 
   /**
@@ -332,49 +339,28 @@ export class RealtimeServiceV2 extends EventEmitter {
    */
   subscribeMarkets(tokenIds: string[], handlers: MarketDataHandlers = {}): MarketSubscription {
     const subId = `market_${++this.subscriptionIdCounter}`;
+
+    // Route orderbook through the dedicated CLOB WebSocket.
+    // Polymarket deprecated `clob_market` messages on ws-live-data in 2025;
+    // the new endpoint is wss://ws-subscriptions-clob.polymarket.com/ws/market.
+    const unsubFns = tokenIds.map(id =>
+      this.clobWS.subscribe(id, (book) => handlers.onOrderbook?.(book))
+    );
+
+    // Keep activity-feed events (price_change, last_trade) on the general WS
+    // — only the orderbook topic was deprecated, these still work.
     const filterStr = JSON.stringify(tokenIds);
-
-    // Subscribe to all market data types
-    const subscriptions = [
-      { topic: 'clob_market', type: 'agg_orderbook', filters: filterStr },
-      { topic: 'clob_market', type: 'price_change', filters: filterStr },
+    const activitySubs = [
       { topic: 'clob_market', type: 'last_trade_price', filters: filterStr },
-      { topic: 'clob_market', type: 'tick_size_change', filters: filterStr },
     ];
-
-    const subMsg = { subscriptions };
+    const subMsg = { subscriptions: activitySubs };
     this.sendSubscription(subMsg);
-    this.subscriptionMessages.set(subId, subMsg);  // Store for reconnection
-
-    // Register handlers
-    const orderbookHandler = (book: OrderbookSnapshot) => {
-      if (tokenIds.includes(book.assetId)) {
-        handlers.onOrderbook?.(book);
-      }
-    };
-
-    const priceChangeHandler = (change: PriceChange) => {
-      if (tokenIds.includes(change.assetId)) {
-        handlers.onPriceChange?.(change);
-      }
-    };
+    this.subscriptionMessages.set(subId, subMsg);
 
     const lastTradeHandler = (trade: LastTradeInfo) => {
-      if (tokenIds.includes(trade.assetId)) {
-        handlers.onLastTrade?.(trade);
-      }
+      if (tokenIds.includes(trade.assetId)) handlers.onLastTrade?.(trade);
     };
-
-    const tickSizeHandler = (change: TickSizeChange) => {
-      if (tokenIds.includes(change.assetId)) {
-        handlers.onTickSizeChange?.(change);
-      }
-    };
-
-    this.on('orderbook', orderbookHandler);
-    this.on('priceChange', priceChangeHandler);
     this.on('lastTrade', lastTradeHandler);
-    this.on('tickSizeChange', tickSizeHandler);
 
     const subscription: MarketSubscription = {
       id: subId,
@@ -382,13 +368,11 @@ export class RealtimeServiceV2 extends EventEmitter {
       type: '*',
       tokenIds,
       unsubscribe: () => {
-        this.off('orderbook', orderbookHandler);
-        this.off('priceChange', priceChangeHandler);
+        unsubFns.forEach(fn => fn());
         this.off('lastTrade', lastTradeHandler);
-        this.off('tickSizeChange', tickSizeHandler);
-        this.sendUnsubscription({ subscriptions });
+        this.sendUnsubscription({ subscriptions: activitySubs });
         this.subscriptions.delete(subId);
-        this.subscriptionMessages.delete(subId);  // Remove from reconnection list
+        this.subscriptionMessages.delete(subId);
       },
     };
 
