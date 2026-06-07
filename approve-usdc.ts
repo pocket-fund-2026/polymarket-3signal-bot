@@ -1,5 +1,6 @@
 import 'dotenv/config';
-import { Wallet, Contract, JsonRpcProvider } from 'ethers';
+import { Wallet, Contract, providers } from 'ethers';
+const { JsonRpcProvider } = providers;
 
 // Polygon RPC
 const RPC = 'https://polygon-rpc.com';
