@@ -4,6 +4,7 @@ const { JsonRpcProvider } = providers;
 
 // Polygon RPC
 const RPC = 'https://polygon-rpc.com';
+const NETWORK = { chainId: 137, name: 'matic' };
 
 // USDC on Polygon (native USDC)
 const USDC_ADDRESS = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
@@ -27,7 +28,7 @@ const ERC20_ABI = [
 const MAX_UINT = '115792089237316195423570985008687907853269984665640564039457584007913129639935';
 
 async function main() {
-  const provider = new JsonRpcProvider(RPC);
+  const provider = new JsonRpcProvider(RPC, NETWORK);
   const wallet = new Wallet(process.env.POLYMARKET_PRIVATE_KEY!, provider);
   console.log('Wallet:', wallet.address);
 
