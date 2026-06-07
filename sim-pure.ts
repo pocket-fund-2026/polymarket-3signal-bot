@@ -17,6 +17,14 @@
 import 'dotenv/config';
 import { appendFileSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'fs';
 import { PolymarketSDK } from './src/index.js';
+import { TradingService } from './src/services/trading-service.js';
+import { RateLimiter } from './src/core/rate-limiter.js';
+import { Cache } from './src/core/cache.js';
+
+// ─── Live / Dry-run toggle ────────────────────────────────────────────────────
+// CLI: npx tsx sim-pure.ts --live
+// ENV: DRY_RUN=false
+const LIVE_MODE = process.argv.includes('--live') || process.env.DRY_RUN === 'false';
 
 // Lock file prevents tsx child-process double-evaluation
 const LOCK = '/tmp/sim-pure.lock';
@@ -94,6 +102,7 @@ let _ethTrend: 'up' | 'down' | 'neutral' = 'neutral';
 const pending:      Trade[] = [];
 const completed:    Trade[] = [];
 const lastCoinEntry: Record<string, number> = {};
+let _tradingService: TradingService | null = null;
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
 function ts() { return new Date().toISOString().slice(11, 19); }
@@ -199,7 +208,8 @@ function drawDashboard(btcPrice: number, ethPrice: number, changePct: number, la
 
   const rows: string[] = [];
   rows.push(`╔${'═'.repeat(W - 2)}╗`);
-  rows.push(ln(`${B}  3-SIGNAL BOT  —  BTC 5m + ETH 5m${R}`));
+  const modeTag = LIVE_MODE ? '\x1b[32m🟢 LIVE\x1b[0m' : '\x1b[33m🧪 SIM\x1b[0m';
+  rows.push(ln(`${B}  3-SIGNAL BOT  —  BTC 5m + ETH 5m  ${modeTag}${B}${R}`));
   rows.push(`╠${'═'.repeat(W - 2)}╣`);
   rows.push(ln(`  Capital  ${capColor}${('$' + capital.toFixed(2)).padEnd(10)}${R} Peak $${peakCapital.toFixed(2).padEnd(8)} → $60`));
   rows.push(ln(`  P&L      ${capColor}${(pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2)}${R}${' '.repeat(6)} W:${wins}  L:${losses}  Open:${pending.length}`));
@@ -352,12 +362,29 @@ async function tryEntry(
     signal: { momentum: momentumScore, sentiment: sentimentScore, fearGreed: fearGreedScore, total: weighted },
   };
 
+  // ── Place real order if LIVE_MODE ────────────────────────────────────────────
+  if (LIVE_MODE) {
+    if (!_tradingService) {
+      console.log(`[${ts()}] ⚠️  LIVE_MODE but no trading service — check POLYMARKET_PRIVATE_KEY`);
+      return;
+    }
+    const tokenId = direction === 'UP' ? mId : market.downTokenId;
+    const orderResult = await _tradingService.createMarketOrder({
+      tokenId, side: 'BUY', amount: shares, orderType: 'FOK',
+    } as any);
+    if (!orderResult.success) {
+      console.log(`[${ts()}] ❌ Order rejected: ${orderResult.errorMsg}`);
+      return;
+    }
+    console.log(`[${ts()}] 🟢 LIVE ORDER PLACED — txHash: ${orderResult.txHash ?? 'pending'}`);
+  }
+
   pending.push(trade);
   lastCoinEntry[coin] = now;
 
   const minsLeft = ((endTs - now) / 60_000).toFixed(1);
   console.log(
-    `[${ts()}] ⚡ ENTRY — ${coin} BUY ${shares} ${direction} @ $${ask.toFixed(2)} = $${totalCost.toFixed(2)} | ` +
+    `[${ts()}] ⚡ ${LIVE_MODE ? '🟢 LIVE' : '🧪 SIM'} ENTRY — ${coin} BUY ${shares} ${direction} @ $${ask.toFixed(2)} = $${totalCost.toFixed(2)} | ` +
     `T-${minsLeft}m | fusion=${weighted >= 0 ? '+' : ''}${weighted.toFixed(3)} ` +
     `(M:${momentumScore >= 0 ? '+' : ''}${momentumScore.toFixed(1)} ` +
     `S:${sentimentScore >= 0 ? '+' : ''}${sentimentScore.toFixed(2)} ` +
@@ -389,9 +416,25 @@ async function main() {
   let lastChangePct = 0;
   let lastSignalStr = 'waiting for first signal…';
 
-  console.log(`[${ts()}] 3-SIGNAL BOT started | cap=$${capital.toFixed(2)} | DRY RUN`);
+  // Init trading service for live mode
+  if (LIVE_MODE) {
+    const rl = new RateLimiter();
+    const cache = new Cache();
+    _tradingService = new TradingService(rl, cache, {
+      privateKey: process.env.POLYMARKET_PRIVATE_KEY!,
+      credentials: {
+        key:        process.env.POLY_API_KEY!,
+        secret:     process.env.POLY_SECRET!,
+        passphrase: process.env.POLY_PASSPHRASE!,
+      },
+    } as any);
+  }
+
+  const modeStr = LIVE_MODE ? '🟢 LIVE TRADING' : '🧪 SIMULATION (DRY RUN)';
+  console.log(`[${ts()}] 3-SIGNAL BOT started | cap=$${capital.toFixed(2)} | ${modeStr}`);
   console.log(`[${ts()}] Signals: Momentum 40% + Groq Sentiment 40% + Fear&Greed 20% | threshold ±0.15`);
   console.log(`[${ts()}] xAI Groq: ${sentSvc ? '✅ enabled' : '⚠️  XAI_API_KEY missing — sentiment disabled'}`);
+  if (LIVE_MODE) console.log(`[${ts()}] ⚠️  LIVE MODE ACTIVE — real USDC will be spent on Polygon`);
 
   // Initial sentiment fetch
   if (sentSvc) {
