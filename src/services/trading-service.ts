@@ -363,6 +363,8 @@ export class TradingService {
             ((result.orderID !== undefined && result.orderID !== '') ||
               (result.transactionsHashes !== undefined && result.transactionsHashes.length > 0)));
 
+        if (!success) console.error('[CLOB] Limit order failed raw:', JSON.stringify(result));
+
         return {
           success,
           orderId: result.orderID,
@@ -424,6 +426,8 @@ export class TradingService {
           (result.success !== false &&
             ((result.orderID !== undefined && result.orderID !== '') ||
               (result.transactionsHashes !== undefined && result.transactionsHashes.length > 0)));
+
+        if (!success) console.error('[CLOB] Market order failed raw:', JSON.stringify(result));
 
         return {
           success,
