@@ -1,9 +1,9 @@
 import 'dotenv/config';
 import { Wallet, Contract, providers } from 'ethers';
-const { JsonRpcProvider } = providers;
+const { StaticJsonRpcProvider } = providers;
 
 // Polygon RPC
-const RPC = 'https://polygon-rpc.com';
+const RPC = 'https://polygon-bor-rpc.publicnode.com';
 const NETWORK = { chainId: 137, name: 'matic' };
 
 // USDC on Polygon (native USDC)
@@ -28,7 +28,7 @@ const ERC20_ABI = [
 const MAX_UINT = '115792089237316195423570985008687907853269984665640564039457584007913129639935';
 
 async function main() {
-  const provider = new JsonRpcProvider(RPC, NETWORK);
+  const provider = new StaticJsonRpcProvider(RPC, NETWORK);
   const wallet = new Wallet(process.env.POLYMARKET_PRIVATE_KEY!, provider);
   console.log('Wallet:', wallet.address);
 
