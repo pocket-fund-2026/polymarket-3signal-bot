@@ -422,11 +422,6 @@ async function main() {
     const cache = new Cache();
     _tradingService = new TradingService(rl, cache, {
       privateKey: process.env.POLYMARKET_PRIVATE_KEY!,
-      credentials: {
-        key:        process.env.POLY_API_KEY!,
-        secret:     process.env.POLY_SECRET!,
-        passphrase: process.env.POLY_PASSPHRASE!,
-      },
     } as any);
   }
 
