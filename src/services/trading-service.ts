@@ -214,15 +214,11 @@ export class TradingService {
     if (this.initialized) return;
 
     const funder = this.config.funderAddress;
-    // Use POLY_PROXY (1) when a funder/proxy address is set, otherwise EOA (0)
     const sigType = funder ? 1 : 0;
 
-    // Create CLOB client with L1 auth (wallet)
-    this.clobClient = new ClobClient(CLOB_HOST, this.chainId, this.wallet, undefined, sigType, funder);
+    // Step 1: basic client (no funder/sigType) for API key derivation — per official README pattern
+    this.clobClient = new ClobClient(CLOB_HOST, this.chainId, this.wallet);
 
-    // Get or create API credentials
-    // We use derive-first strategy (opposite of official createOrDeriveApiKey)
-    // because most users already have a key, avoiding unnecessary 400 error logs.
     if (!this.credentials) {
       const creds = await this.deriveOrCreateApiKey();
       this.credentials = {
@@ -232,7 +228,7 @@ export class TradingService {
       };
     }
 
-    // Re-initialize with L2 auth (credentials)
+    // Step 2: full client with L2 auth + funder + sigType
     this.clobClient = new ClobClient(
       CLOB_HOST,
       this.chainId,
