@@ -370,10 +370,10 @@ async function tryEntry(
     }
     const tokenId = direction === 'UP' ? mId : market.downTokenId;
     const orderResult = await _tradingService.createMarketOrder({
-      tokenId, side: 'BUY', amount: shares, orderType: 'FOK',
+      tokenId, side: 'BUY', amount: shares, orderType: 'FAK',
     } as any);
     if (!orderResult.success) {
-      console.log(`[${ts()}] ❌ Order rejected: ${orderResult.errorMsg}`);
+      console.log(`[${ts()}] ❌ Order rejected: ${orderResult.errorMsg ?? JSON.stringify(orderResult)}`);
       return;
     }
     console.log(`[${ts()}] 🟢 LIVE ORDER PLACED — txHash: ${orderResult.txHash ?? 'pending'}`);
