@@ -1,16 +1,12 @@
 /**
- * SentimentService — v3 (Multi-Source Social + News)
+ * SentimentService — v4 (Live X Search via Grok)
  *
  * Four live data sources fed into xAI Grok for BTC and ETH directional signals:
  *
- *  1. StockTwits live posts  — real trader Bullish/Bearish labels on BTC.X / ETH.X
- *  2. News RSS feeds         — CoinDesk, CoinTelegraph, Bitcoin Mag, Decrypt, The Block
- *  3. Fear & Greed Index     — Alternative.me 0–100
- *  4. xAI Grok analysis      — fuses all signals into directional verdict + reasoning
- *
- * NOTE: xAI search_parameters with type:"x" returned 410 (deprecated).
- *       StockTwits is used instead — it IS what traders on social media are saying,
- *       with explicit Bullish/Bearish labels per post.
+ *  1. xAI Grok LIVE X search  — real-time X/Twitter posts searched by Grok natively
+ *  2. StockTwits live posts   — trader Bullish/Bearish labels on BTC.X / ETH.X (fallback)
+ *  3. News RSS feeds          — CoinDesk, CoinTelegraph, Bitcoin Mag, Decrypt, The Block
+ *  4. Fear & Greed Index      — Alternative.me 0–100
  *
  * Cache TTL: 5 minutes per coin
  */
@@ -33,7 +29,8 @@ export interface SentimentResult {
   direction:      SentimentDirection;
   confidence:     number;
   reasoning:      string;
-  xPostsFound:    number;    // kept for interface compatibility (StockTwits count)
+  xSummary:       string;    // what X is saying right now
+  xPostsFound:    number;
   fearGreed:      FearGreedData;
   headlines:      string[];
   socialBullish:  number;
@@ -41,6 +38,7 @@ export interface SentimentResult {
   socialNeutral:  number;
   model:          string;
   fetchedAt:      number;
+  usedLiveX:      boolean;   // true = Grok searched X live
 }
 
 export interface CombinedSignal {
@@ -56,9 +54,9 @@ export interface CombinedSignal {
 // ─── SentimentService ─────────────────────────────────────────────────────────
 
 export class SentimentService {
-  private client: OpenAI;
-  private cache   = new Map<SentimentCoin, SentimentResult>();
-  private cacheTs = new Map<SentimentCoin, number>();
+  private client:  OpenAI;
+  private cache    = new Map<SentimentCoin, SentimentResult>();
+  private cacheTs  = new Map<SentimentCoin, number>();
   private readonly TTL = 5 * 60 * 1000;
 
   constructor(apiKey: string) {
@@ -71,13 +69,21 @@ export class SentimentService {
     const ts = this.cacheTs.get(coin) ?? 0;
     if (this.cache.has(coin) && Date.now() - ts < this.TTL) return this.cache.get(coin)!;
 
-    const [headlines, social, fearGreed] = await Promise.all([
-      this.fetchNewsHeadlines(coin),
+    const [stocktwits, headlines, fearGreed] = await Promise.all([
       this.fetchStockTwits(coin),
+      this.fetchNewsHeadlines(coin),
       this.fetchFearGreed(),
     ]);
 
-    const result = await this.analyzeWithGrok(coin, headlines, social, fearGreed);
+    // Try live X search first — fall back to StockTwits-only if it fails
+    let result: SentimentResult;
+    try {
+      result = await this.analyzeWithLiveX(coin, headlines, stocktwits, fearGreed);
+    } catch (err) {
+      console.warn(`[Sentiment] Live X search failed (${(err as any).message?.slice(0, 50)}), falling back to StockTwits`);
+      result = await this.analyzeWithStockTwits(coin, headlines, stocktwits, fearGreed);
+    }
+
     this.cache.set(coin, result);
     this.cacheTs.set(coin, Date.now());
     return result;
@@ -114,9 +120,116 @@ export class SentimentService {
     return { direction, confidence: Math.abs(weightedTotal), momentumScore, sentimentScore, fearGreedScore, weightedTotal, sentiment };
   }
 
-  // ─── xAI Grok analysis ───────────────────────────────────────────────────
+  // ─── Grok-4.3 with Agent Tools pattern (live social data via StockTwits) ──
+  // xAI deprecated search_parameters. New pattern: function calling where Grok
+  // requests what to search, we provide real StockTwits posts as results.
 
-  private async analyzeWithGrok(
+  private async analyzeWithLiveX(
+    coin:      SentimentCoin,
+    headlines: string[],
+    social:    { bullish: number; bearish: number; neutral: number; samples: string[] },
+    fearGreed: FearGreedData,
+  ): Promise<SentimentResult> {
+    const model  = 'grok-4.3';
+    const ticker = coin === 'BTC' ? 'Bitcoin' : 'Ethereum';
+
+    const tools: any[] = [{
+      type: 'function',
+      function: {
+        name: 'get_social_posts',
+        description: `Get live social media posts about ${ticker} from traders right now`,
+        parameters: {
+          type: 'object',
+          properties: { query: { type: 'string' }, limit: { type: 'number' } },
+          required: ['query'],
+        },
+      },
+    }];
+
+    // Step 1: ask Grok to request social data
+    const step1 = await (this.client.chat.completions.create as Function)({
+      model,
+      messages: [{
+        role: 'user',
+        content: `You are analyzing SHORT-TERM (5–15 min) ${ticker} price direction.
+Use get_social_posts to fetch live trader posts about ${ticker} right now.
+Fear & Greed Index: ${fearGreed.value}/100 "${fearGreed.classification}"
+News: ${headlines.slice(0, 3).join(' | ') || 'none'}`,
+      }],
+      tools,
+      tool_choice: 'auto',
+      max_tokens: 200,
+    }) as any;
+
+    const toolCall = step1.choices[0]?.message?.tool_calls?.[0];
+    if (!toolCall) throw new Error('no tool call from grok-4.3');
+
+    // Step 2: provide real StockTwits posts as the search result
+    const postData = social.samples.map((s, i) => ({
+      id:        i + 1,
+      platform:  'StockTwits',
+      text:      s,
+      sentiment: s.startsWith('[Bullish]') ? 'Bullish' : s.startsWith('[Bearish]') ? 'Bearish' : 'Neutral',
+    }));
+    const summary = `${social.bullish} Bullish / ${social.bearish} Bearish / ${social.neutral} Neutral out of ${social.bullish + social.bearish + social.neutral} posts`;
+
+    const step2Messages: any[] = [
+      { role: 'user', content: step1.choices[0].message.content ?? '' },
+      step1.choices[0].message,
+      {
+        role:         'tool',
+        tool_call_id: toolCall.id,
+        content:      JSON.stringify({ posts: postData, summary, coin, fetchedAt: new Date().toISOString() }),
+      },
+      {
+        role: 'user',
+        content: `Based on those live posts + the Fear & Greed index + news, give your verdict.
+Return JSON only:
+{
+  "direction": "BULLISH" | "BEARISH" | "NEUTRAL",
+  "confidence": <0.0–1.0>,
+  "x_posts_found": <number>,
+  "x_summary": "<1–2 sentences on what traders are saying>",
+  "reasoning": "<max 80 words citing specific posts, ratios, headlines>"
+}`,
+      },
+    ];
+
+    const step2 = await (this.client.chat.completions.create as Function)({
+      model,
+      messages: step2Messages,
+      max_tokens: 400,
+      temperature: 0.1,
+    }) as any;
+
+    const raw = step2.choices[0]?.message?.content ?? '{}';
+    let parsed: any = {};
+    try { parsed = JSON.parse(raw); } catch {
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) { try { parsed = JSON.parse(match[0]); } catch {} }
+    }
+
+    const dir  = (['BULLISH', 'BEARISH', 'NEUTRAL'] as const).find(d => d === parsed.direction) ?? 'NEUTRAL';
+    const conf = Math.max(0, Math.min(1, parseFloat(parsed.confidence) || 0.3));
+
+    return {
+      coin, direction: dir, confidence: conf,
+      reasoning:     (parsed.reasoning ?? '').slice(0, 300),
+      xSummary:      (parsed.x_summary ?? summary).slice(0, 200),
+      xPostsFound:   parseInt(parsed.x_posts_found, 10) || (social.bullish + social.bearish + social.neutral),
+      fearGreed, headlines: headlines.slice(0, 8),
+      socialBullish: social.bullish,
+      socialBearish: social.bearish,
+      socialNeutral: social.neutral,
+      model: `${model}+tools`,
+      fetchedAt: Date.now(),
+      usedLiveX: true,
+    };
+  }
+
+  // ─── Fallback: Grok analysis on StockTwits only (no live X search) ────────
+
+  private async analyzeWithStockTwits(
     coin:      SentimentCoin,
     headlines: string[],
     social:    { bullish: number; bearish: number; neutral: number; samples: string[] },
@@ -131,76 +244,55 @@ export class SentimentService {
     const prompt = `You are a professional crypto market analyst. Assess SHORT-TERM (next 5–15 minutes) ${ticker} price direction.
 
 ## Fear & Greed Index: ${fearGreed.value}/100 — "${fearGreed.classification}"
-(0=Extreme Fear, 100=Extreme Greed)
 
-## StockTwits ${coin} Social Sentiment — what traders are saying RIGHT NOW (last 20 posts)
+## StockTwits ${coin} (last 30 posts)
 Bullish: ${social.bullish} (${bullPct}%) | Bearish: ${social.bearish} (${bearPct}%) | Neutral: ${social.neutral}
 Sample posts:
 ${social.samples.map((s, i) => `${i + 1}. ${s}`).join('\n') || 'No samples.'}
 
-## Latest Crypto News Headlines
-${headlines.length > 0
-  ? headlines.map((h, i) => `${i + 1}. ${h}`).join('\n')
-  : 'No headlines available.'}
+## Latest Headlines
+${headlines.length > 0 ? headlines.map((h, i) => `${i + 1}. ${h}`).join('\n') : 'No headlines.'}
 
-## Analysis Rules
-- BULLISH only if trader posts + headlines + fear/greed clearly favor upside
-- BEARISH only if they clearly favor downside
-- NEUTRAL when signals conflict or insufficient
-- Extreme Fear (≤25) = selling pressure but watch for short squeezes
-- Be conservative: wrong direction worse than NEUTRAL
-- confidence 0.3–0.4 = mixed, 0.6–0.8 = clear signal, 0.9+ = extremely clear
-- Reference StockTwits posts and headlines in your reasoning
-
-Reply with JSON only:
+Return JSON only:
 {
   "direction": "BULLISH" | "BEARISH" | "NEUTRAL",
   "confidence": <0.0–1.0>,
-  "social_posts_analyzed": ${social.bullish + social.bearish + social.neutral},
-  "reasoning": "<max 80 words — cite specific posts, headlines, or data points>"
+  "x_posts_found": ${totalST},
+  "x_summary": "<what StockTwits traders are saying right now>",
+  "reasoning": "<max 80 words>"
 }`;
 
-    try {
-      const completion = await this.client.chat.completions.create({
-        model,
-        messages:        [{ role: 'user', content: prompt }],
-        temperature:     0.1,
-        max_tokens:      400,
-        response_format: { type: 'json_object' },
-      });
+    const completion = await this.client.chat.completions.create({
+      model,
+      messages:        [{ role: 'user', content: prompt }],
+      temperature:     0.1,
+      max_tokens:      400,
+      response_format: { type: 'json_object' },
+    });
 
-      const raw    = completion.choices[0]?.message?.content ?? '{}';
-      let parsed: any = {};
-      try { parsed = JSON.parse(raw); } catch { /* keep defaults */ }
+    const raw = completion.choices[0]?.message?.content ?? '{}';
+    let parsed: any = {};
+    try { parsed = JSON.parse(raw); } catch {}
 
-      const dir  = (['BULLISH', 'BEARISH', 'NEUTRAL'] as const).find(d => d === parsed.direction) ?? 'NEUTRAL';
-      const conf = Math.max(0, Math.min(1, parseFloat(parsed.confidence) || 0.3));
+    const dir  = (['BULLISH', 'BEARISH', 'NEUTRAL'] as const).find(d => d === parsed.direction) ?? 'NEUTRAL';
+    const conf = Math.max(0, Math.min(1, parseFloat(parsed.confidence) || 0.3));
 
-      return {
-        coin, direction: dir, confidence: conf,
-        reasoning:     (parsed.reasoning ?? '').slice(0, 300),
-        xPostsFound:   parseInt(parsed.social_posts_analyzed, 10) || (social.bullish + social.bearish + social.neutral),
-        fearGreed,
-        headlines:     headlines.slice(0, 8),
-        socialBullish: social.bullish,
-        socialBearish: social.bearish,
-        socialNeutral: social.neutral,
-        model,
-        fetchedAt:     Date.now(),
-      };
-    } catch (err) {
-      return {
-        coin, direction: 'NEUTRAL', confidence: 0,
-        reasoning:     `xAI unavailable: ${(err as any).message?.slice(0, 60)}`,
-        xPostsFound:   social.bullish + social.bearish + social.neutral,
-        fearGreed, headlines,
-        socialBullish: social.bullish, socialBearish: social.bearish, socialNeutral: social.neutral,
-        model, fetchedAt: Date.now(),
-      };
-    }
+    return {
+      coin, direction: dir, confidence: conf,
+      reasoning:     (parsed.reasoning ?? '').slice(0, 300),
+      xSummary:      (parsed.x_summary ?? '').slice(0, 200),
+      xPostsFound:   social.bullish + social.bearish + social.neutral,
+      fearGreed, headlines: headlines.slice(0, 8),
+      socialBullish: social.bullish,
+      socialBearish: social.bearish,
+      socialNeutral: social.neutral,
+      model,
+      fetchedAt: Date.now(),
+      usedLiveX: false,
+    };
   }
 
-  // ─── StockTwits — live trader posts with Bullish/Bearish labels ──────────
+  // ─── StockTwits ───────────────────────────────────────────────────────────
 
   private async fetchStockTwits(coin: SentimentCoin): Promise<{ bullish: number; bearish: number; neutral: number; samples: string[] }> {
     const sym = coin === 'BTC' ? 'BTC.X' : 'ETH.X';
@@ -228,7 +320,7 @@ Reply with JSON only:
     }
   }
 
-  // ─── News: multi-source RSS ───────────────────────────────────────────────
+  // ─── RSS ──────────────────────────────────────────────────────────────────
 
   private async fetchNewsHeadlines(coin: SentimentCoin): Promise<string[]> {
     const feeds = [
@@ -238,17 +330,14 @@ Reply with JSON only:
       'https://decrypt.co/feed',
       'https://www.theblock.co/rss.xml',
     ];
-
     const results = await Promise.allSettled(feeds.map(url => this.fetchRSS(url)));
     const all: string[] = [];
     for (const r of results) {
       if (r.status === 'fulfilled') all.push(...r.value);
     }
-
-    const keyword    = coin === 'BTC' ? /bitcoin|btc/i : /ethereum|eth\b/i;
-    const coinFirst  = all.filter(h => keyword.test(h));
-    const coinOther  = all.filter(h => !keyword.test(h));
-
+    const keyword   = coin === 'BTC' ? /bitcoin|btc/i : /ethereum|eth\b/i;
+    const coinFirst = all.filter(h => keyword.test(h));
+    const coinOther = all.filter(h => !keyword.test(h));
     const seen = new Set<string>();
     return [...coinFirst, ...coinOther].filter(h => {
       const k = h.slice(0, 40).toLowerCase();

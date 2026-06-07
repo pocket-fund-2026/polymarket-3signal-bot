@@ -80,6 +80,48 @@ export interface BotState {
 
   // Portfolio Sync (positions)
   positions?: any[];
+
+  // Weather market positions
+  weatherPositions?: WeatherPosition[];
+  weatherCompleted?: WeatherCompleted[];
+
+  // Adaptive signal weights (evolve as trades complete)
+  signalWeights?: {
+    momentum: number;
+    sentiment: number;
+    fearGreed: number;
+    bookFlow: number;
+    ethMomentum: number;
+    smartMoney: number;
+    tradesSeen: number;
+    currentKelly: number;
+    winStreak: number;
+    currentThreshold: number;
+    volatility: number;
+  };
+}
+
+export interface WeatherPosition {
+  id: string;
+  city: string;
+  cityName: string;
+  temp: number;
+  direction: 'YES' | 'NO';
+  entryPrice: number;
+  shares: number;
+  totalCost: number;
+  forecastTemp: number;
+  modelProb: number;
+  marketYes: number;
+  edge: number;
+  question: string;
+  endTs: number;
+}
+
+export interface WeatherCompleted extends WeatherPosition {
+  profit: number;
+  resolution: string;
+  finalYes: number;
 }
 
 export interface BotConfig {

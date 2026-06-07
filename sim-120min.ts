@@ -33,8 +33,8 @@ console.log = (...args: any[]) => {
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 const CFG = {
-  RUN_MINUTES:      120,
-  INITIAL_CAPITAL:  3.00,
+  RUN_MINUTES:      99999,
+  INITIAL_CAPITAL:  4.37,
 
   DIR_FRACTION:     0.30,   // 30% of capital per trade (Kelly-based)
   DIR_MIN_SHARES:   1,

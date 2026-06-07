@@ -18,6 +18,7 @@ import {
   HistoryPage,
   PositionsPage,
   StrategyControls,
+  WeatherPanel,
 } from './components';
 
 type Page = 'dashboard' | 'history' | 'positions';
@@ -177,6 +178,9 @@ function App() {
             <OnChainStats state={state} />
           </div>
         </div>
+
+        {/* Row 4: Weather Markets — full width */}
+        <WeatherPanel state={state} logs={logs} />
 
         {/* Row 4: Activity Log - Full Width at bottom */}
         <ActivityLog logs={logs} />
